@@ -1,0 +1,91 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.h
+  * @brief          : Header for main.c file.
+  *                   This file contains the common defines of the application.
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2026 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+
+/* Define to prevent recursive inclusion -------------------------------------*/
+#ifndef __MAIN_H
+#define __MAIN_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Includes ------------------------------------------------------------------*/
+#include "stm32f1xx_hal.h"
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+
+/* USER CODE END Includes */
+
+/* Exported types ------------------------------------------------------------*/
+/* USER CODE BEGIN ET */
+
+/* USER CODE END ET */
+
+/* Exported constants --------------------------------------------------------*/
+/* USER CODE BEGIN EC */
+
+/* USER CODE END EC */
+
+/* Exported macro ------------------------------------------------------------*/
+/* USER CODE BEGIN EM */
+
+/* USER CODE END EM */
+
+/* Exported functions prototypes ---------------------------------------------*/
+void Error_Handler(void);
+
+/* USER CODE BEGIN EFP */
+
+/* USER CODE END EFP */
+
+/* Private defines -----------------------------------------------------------*/
+#define Led_Pin GPIO_PIN_13
+#define Led_GPIO_Port GPIOC
+#define Temp_button_Pin GPIO_PIN_3
+#define Temp_button_GPIO_Port GPIOB
+#define Temp_button_EXTI_IRQn EXTI3_IRQn
+#define Humidity_button_Pin GPIO_PIN_4
+#define Humidity_button_GPIO_Port GPIOB
+#define Humidity_button_EXTI_IRQn EXTI4_IRQn
+
+/* USER CODE BEGIN Private defines */
+#ifndef LCD_H
+#define LCD_H
+#define E 2
+// Структура для работы с конкретным дисплеем
+typedef struct
+{
+ I2C_HandleTypeDef *hi2c;
+ uint16_t DevAddress;
+} LCD1602;
+void sendData(LCD1602 *scr , uint8_t *pData); // отправка команды по четырехбитному интерфейсу
+void initLCD(LCD1602 *scr); // инициализация дисплея
+void writeLCD(LCD1602 *scr, uint8_t s); // вывод символа s на дисплей
+void writeStringLCD(LCD1602 *scr,char *str); // вывод строки str на дисплей
+void moveXY(LCD1602 *scr,uint8_t x, uint8_t y); // перемещение курсора в позицию X,Y
+#endif /* LCD_H */
+/* USER CODE END Private defines */
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __MAIN_H */
