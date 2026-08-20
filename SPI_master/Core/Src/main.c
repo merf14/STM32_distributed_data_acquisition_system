@@ -22,16 +22,19 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#define BUFFER_SIZE 1
+#define BUFFER_SIZE 3
 #define PCF8574_address 0x27
 #define REC_CODE 0
 #define SENT_CODE 1
-#define HUNIDITY_CODE 2
-#define TEMPERATURE_CODE 3
+
+#define DHT11_CODE 0
+#define HCSR04_CODE 1
+#define RESPONSE_CODE 2
 #include "task.h"
 #include "string.h"
 #include "stdio.h"
 #include "queue.h"
+#include "semphr.h"
 uint8_t transmitBuffer[BUFFER_SIZE];
 uint8_t receiveBuffer[BUFFER_SIZE];
 
@@ -64,24 +67,17 @@ const osThreadAttr_t defaultTask_attributes = {
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityLow,
 };
-/* Definitions for SPI_Transmit */
-osThreadId_t SPI_TransmitHandle;
-const osThreadAttr_t SPI_Transmit_attributes = {
-  .name = "SPI_Transmit",
+/* Definitions for TaskSPI_Transac */
+osThreadId_t TaskSPI_TransacHandle;
+const osThreadAttr_t TaskSPI_Transac_attributes = {
+  .name = "TaskSPI_Transac",
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityBelowNormal,
 };
-/* Definitions for SPI_Recieve */
-osThreadId_t SPI_RecieveHandle;
-const osThreadAttr_t SPI_Recieve_attributes = {
-  .name = "SPI_Recieve",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityAboveNormal,
-};
-/* Definitions for display */
-osThreadId_t displayHandle;
-const osThreadAttr_t display_attributes = {
-  .name = "display",
+/* Definitions for TaskDisplay */
+osThreadId_t TaskDisplayHandle;
+const osThreadAttr_t TaskDisplay_attributes = {
+  .name = "TaskDisplay",
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
@@ -100,6 +96,11 @@ osMessageQueueId_t QueueTransmitHandle;
 const osMessageQueueAttr_t QueueTransmit_attributes = {
   .name = "QueueTransmit"
 };
+/* Definitions for BinarySemTransmitReady */
+osSemaphoreId_t BinarySemTransmitReadyHandle;
+const osSemaphoreAttr_t BinarySemTransmitReady_attributes = {
+  .name = "BinarySemTransmitReady"
+};
 /* USER CODE BEGIN PV */
 
 /* USER CODE END PV */
@@ -110,9 +111,8 @@ static void MX_GPIO_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_I2C1_Init(void);
 void StartDefaultTask(void *argument);
-void Start_SPI_Transmit(void *argument);
-void Start_SPI_Recieve(void *argument);
-void Start_display(void *argument);
+void StartTaskSPI_Transaction(void *argument);
+void StartTaskDisplay(void *argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -121,19 +121,38 @@ void Start_display(void *argument);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi)
+void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
 	{
 	    if (hspi->Instance == SPI1)
 	    {
 
+	    	HAL_GPIO_WritePin(SPI_CS_GPIO_Port, SPI_CS_Pin, GPIO_PIN_SET);
 	        BaseType_t xHigherPriorityTaskWoken = pdTRUE;
+	        xSemaphoreGiveFromISR(BinarySemTransmitReadyHandle, &xHigherPriorityTaskWoken);
 
-	        uint16_t toSend = (REC_CODE<<8)|receiveBuffer[0];
+	        uint32_t toSend = (receiveBuffer[0]<<16)|(receiveBuffer[1]<<8)|receiveBuffer[2];
+
 	        xQueueSendFromISR( Queue_LCDHandle, ( void * ) &toSend, &xHigherPriorityTaskWoken);
+
 	        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 	    }
 
 	}
+
+/*void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
+	{
+	    if (hspi->Instance == SPI1)
+	    {
+	    	HAL_GPIO_WritePin(Led_GPIO_Port, Led_Pin, GPIO_PIN_RESET);
+	        BaseType_t xHigherPriorityTaskWoken = pdTRUE;
+
+	        uint8_t toSend = 0;
+	        xQueueSendFromISR( QueueRecieveSPIHandle, ( void * ) &toSend, &xHigherPriorityTaskWoken);
+	        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+	        HAL_GPIO_WritePin(Led_GPIO_Port, Led_Pin, GPIO_PIN_SET);
+	    }
+
+	}*/
 
 uint32_t task1Cnt = 0;
 	uint32_t task2Cnt = 0;
@@ -186,6 +205,15 @@ void initLCD(LCD1602 * scr) {
     sendData(scr, & buf);
     buf = 0xC8;
     sendData(scr, & buf);
+}
+
+void clearLCD(LCD1602 * scr) {
+	uint8_t buf;
+	buf = 0; // очистка дисплея
+	    sendData(scr, & buf);
+	    buf = 0x10;
+	    sendData(scr, & buf);
+	    HAL_Delay(2);
 }
 // Функция writeLCD выводит символ s на дисплей scr
 void writeLCD(LCD1602 * scr, uint8_t s) {
@@ -268,6 +296,10 @@ int main(void)
   /* add mutexes, ... */
   /* USER CODE END RTOS_MUTEX */
 
+  /* Create the semaphores(s) */
+  /* creation of BinarySemTransmitReady */
+  BinarySemTransmitReadyHandle = osSemaphoreNew(1, 0, &BinarySemTransmitReady_attributes);
+
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
   /* USER CODE END RTOS_SEMAPHORES */
@@ -278,13 +310,13 @@ int main(void)
 
   /* Create the queue(s) */
   /* creation of Queue_LCD */
-  Queue_LCDHandle = osMessageQueueNew (16, sizeof(uint16_t), &Queue_LCD_attributes);
+  Queue_LCDHandle = osMessageQueueNew (16, sizeof(uint32_t), &Queue_LCD_attributes);
 
   /* creation of QueueRecieveSPI */
   QueueRecieveSPIHandle = osMessageQueueNew (8, sizeof(uint8_t), &QueueRecieveSPI_attributes);
 
   /* creation of QueueTransmit */
-  QueueTransmitHandle = osMessageQueueNew (16, sizeof(uint8_t), &QueueTransmit_attributes);
+  QueueTransmitHandle = osMessageQueueNew (8, sizeof(uint8_t), &QueueTransmit_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -294,14 +326,11 @@ int main(void)
   /* creation of defaultTask */
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
-  /* creation of SPI_Transmit */
-  SPI_TransmitHandle = osThreadNew(Start_SPI_Transmit, NULL, &SPI_Transmit_attributes);
+  /* creation of TaskSPI_Transac */
+  TaskSPI_TransacHandle = osThreadNew(StartTaskSPI_Transaction, NULL, &TaskSPI_Transac_attributes);
 
-  /* creation of SPI_Recieve */
-  SPI_RecieveHandle = osThreadNew(Start_SPI_Recieve, NULL, &SPI_Recieve_attributes);
-
-  /* creation of display */
-  displayHandle = osThreadNew(Start_display, NULL, &display_attributes);
+  /* creation of TaskDisplay */
+  TaskDisplayHandle = osThreadNew(StartTaskDisplay, NULL, &TaskDisplay_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -339,10 +368,13 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL4;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -352,12 +384,12 @@ void SystemClock_Config(void)
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK)
   {
     Error_Handler();
   }
@@ -416,10 +448,10 @@ static void MX_SPI1_Init(void)
   hspi1.Instance = SPI1;
   hspi1.Init.Mode = SPI_MODE_MASTER;
   hspi1.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi1.Init.DataSize = SPI_DATASIZE_16BIT;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
   hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi1.Init.NSS = SPI_NSS_HARD_OUTPUT;
+  hspi1.Init.NSS = SPI_NSS_SOFT;
   hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
   hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
@@ -456,6 +488,9 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(Led_GPIO_Port, Led_Pin, GPIO_PIN_SET);
 
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(SPI_CS_GPIO_Port, SPI_CS_Pin, GPIO_PIN_SET);
+
   /*Configure GPIO pin : Led_Pin */
   GPIO_InitStruct.Pin = Led_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
@@ -463,8 +498,15 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(Led_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : Temp_button_Pin Humidity_button_Pin */
-  GPIO_InitStruct.Pin = Temp_button_Pin|Humidity_button_Pin;
+  /*Configure GPIO pin : SPI_CS_Pin */
+  GPIO_InitStruct.Pin = SPI_CS_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(SPI_CS_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : DHT11_button_Pin HCSR04_button_Pin */
+  GPIO_InitStruct.Pin = DHT11_button_Pin|HCSR04_button_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
@@ -484,14 +526,14 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-	uint16_t toSend;
-	 if (GPIO_Pin == Humidity_button_Pin)
+	uint8_t toSend;
+	 if (GPIO_Pin == HCSR04_button_Pin)
 	 {
-		 toSend = HUNIDITY_CODE;
+		 toSend = DHT11_CODE;
 	 }
-	 else if (GPIO_Pin == Temp_button_Pin)
+	 else if (GPIO_Pin == DHT11_button_Pin)
 	 {
-		 toSend = TEMPERATURE_CODE;
+		 toSend = HCSR04_CODE;
 	 }
 	 BaseType_t xHigherPriorityTaskWoken = pdTRUE;
 	 xQueueSendFromISR( QueueTransmitHandle, ( void * ) &toSend, &xHigherPriorityTaskWoken);
@@ -518,97 +560,72 @@ void StartDefaultTask(void *argument)
   /* USER CODE END 5 */
 }
 
-/* USER CODE BEGIN Header_Start_SPI_Transmit */
+/* USER CODE BEGIN Header_StartTaskSPI_Transaction */
 /**
-* @brief Function implementing the SPI_Transmit thread.
+* @brief Function implementing the TaskSPI_Transac thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_Start_SPI_Transmit */
-void Start_SPI_Transmit(void *argument)
+/* USER CODE END Header_StartTaskSPI_Transaction */
+void StartTaskSPI_Transaction(void *argument)
 {
-  /* USER CODE BEGIN Start_SPI_Transmit */
-
+  /* USER CODE BEGIN StartTaskSPI_Transaction */
+	uint16_t Received;
   /* Infinite loop */
   for(;;)
   {
-	if(uxQueueMessagesWaiting(QueueTransmitHandle)>1){
-		uint8_t Recieved;
-		HAL_GPIO_WritePin(Led_GPIO_Port, Led_Pin, GPIO_PIN_RESET);
-		xQueueReceive( QueueTransmitHandle, &( Recieved ), portMAX_DELAY );
-		transmitBuffer[0] = Recieved;
-		HAL_SPI_Transmit_IT(&hspi1, transmitBuffer, BUFFER_SIZE);
-		uint16_t toSend = (SENT_CODE<<8)|transmitBuffer[0];
-		xQueueSend( Queue_LCDHandle, ( void * ) &toSend, portMAX_DELAY  );
-		uint8_t toSend2 = 0;
-		xQueueSend( QueueRecieveSPIHandle, ( void * ) &toSend2, portMAX_DELAY  );
-	}
-	HAL_GPIO_WritePin(Led_GPIO_Port, Led_Pin, GPIO_PIN_SET);
-	osDelay(30);
+
+		xQueueReceive( QueueTransmitHandle, &( Received ), portMAX_DELAY );
+		transmitBuffer[0] = Received;
+		HAL_GPIO_WritePin(SPI_CS_GPIO_Port, SPI_CS_Pin, GPIO_PIN_RESET);
+		HAL_SPI_TransmitReceive_IT(&hspi1, transmitBuffer, receiveBuffer, BUFFER_SIZE);
+
+		xSemaphoreTake(BinarySemTransmitReadyHandle, portMAX_DELAY);
+		osDelay(4000);
+
+		transmitBuffer[0] = RESPONSE_CODE;
+		HAL_GPIO_WritePin(SPI_CS_GPIO_Port, SPI_CS_Pin, GPIO_PIN_RESET);
+		osDelay(1000);
+		HAL_SPI_TransmitReceive_IT(&hspi1, transmitBuffer, receiveBuffer, BUFFER_SIZE);
 
   }
-  /* USER CODE END Start_SPI_Transmit */
+  /* USER CODE END StartTaskSPI_Transaction */
 }
 
-/* USER CODE BEGIN Header_Start_SPI_Recieve */
+/* USER CODE BEGIN Header_StartTaskDisplay */
 /**
-* @brief Function implementing the SPI_Recieve thread.
+* @brief Function implementing the TaskDisplay thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_Start_SPI_Recieve */
-void Start_SPI_Recieve(void *argument)
+/* USER CODE END Header_StartTaskDisplay */
+void StartTaskDisplay(void *argument)
 {
-  /* USER CODE BEGIN Start_SPI_Recieve */
-  /* Infinite loop */
-  for(;;)
-  {
-	  if(uxQueueMessagesWaiting(QueueRecieveSPIHandle)>1){
-		  uint16_t Recieved;
-		  xQueueReceive( QueueRecieveSPIHandle, &( Recieved ), portMAX_DELAY );
-		  HAL_SPI_Receive_IT(&hspi1, receiveBuffer, BUFFER_SIZE);
-		  osDelay(30);
-	  }
-	  osDelay(30);
-  }
-  /* USER CODE END Start_SPI_Recieve */
-}
-
-/* USER CODE BEGIN Header_Start_display */
-/**
-* @brief Function implementing the display thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_Start_display */
-void Start_display(void *argument)
-{
-  /* USER CODE BEGIN Start_display */
-  /* Infinite loop */
-  for(;;)
-  {
-	  if(uxQueueMessagesWaiting(Queue_LCDHandle)>1)
+  /* USER CODE BEGIN StartTaskDisplay */
+	uint16_t Received;
+	  /* Infinite loop */
+	  for(;;)
 	  {
 
-		  uint16_t Recieved;
-		  xQueueReceive( Queue_LCDHandle, &( Recieved ), portMAX_DELAY );
-		  if ((Recieved>>8)==(REC_CODE)){
-			  char str[13];
-			  snprintf(str, 13, "Recieved %u  ", (Recieved&255));
-			  moveXY(&scr,0,1);
-			  writeStringLCD(&scr,str);
-		  }
-		  else if ((Recieved>>8)==(SENT_CODE)){
-			  char str[9];
-			  snprintf(str, 9, "Sent %u  ", (Recieved&255));
-			  moveXY(&scr,0,0);
-			  writeStringLCD(&scr,str);
-		  }
-	  }
-	  osDelay(30);
+			  xQueueReceive( Queue_LCDHandle, &( Received ), portMAX_DELAY );
+			  if ((Received>>16)==(DHT11_CODE)){
+				  char str[13];
+				  snprintf(str, 18, "Temperature: %u  ", (Received&255));
+				  moveXY(&scr,0,0);
+				  writeStringLCD(&scr,str);
+				  snprintf(str, 15, "Humidity: %u  ", ((Received>>8)&255));
+				  moveXY(&scr,0,1);
+				  writeStringLCD(&scr,str);
+			  }
+			  else if ((Received>>16)==(HCSR04_CODE)){
+				  char str[9];
+				  snprintf(str, 15, "Distance: %u  ", (Received&65535));
+				  moveXY(&scr,0,0);
+				  writeStringLCD(&scr,str);
+			  }
 
-  }
-  /* USER CODE END Start_display */
+	  }
+  /* USER CODE END StartTaskDisplay */
 }
 
 /**

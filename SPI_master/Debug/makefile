@@ -38,34 +38,34 @@ $(wildcard ../makefile.init) \
 $(wildcard ../makefile.targets) \
 
 
-BUILD_ARTIFACT_NAME := connect_master
+BUILD_ARTIFACT_NAME := SPI_master
 BUILD_ARTIFACT_EXTENSION := elf
 BUILD_ARTIFACT_PREFIX :=
 BUILD_ARTIFACT := $(BUILD_ARTIFACT_PREFIX)$(BUILD_ARTIFACT_NAME)$(if $(BUILD_ARTIFACT_EXTENSION),.$(BUILD_ARTIFACT_EXTENSION),)
 
 # Add inputs and outputs from these tool invocations to the build variables 
 EXECUTABLES += \
-connect_master.elf \
+SPI_master.elf \
 
 MAP_FILES += \
-connect_master.map \
+SPI_master.map \
 
 SIZE_OUTPUT += \
 default.size.stdout \
 
 OBJDUMP_LIST += \
-connect_master.list \
+SPI_master.list \
 
 
 # All Target
 all: main-build
 
 # Main-build Target
-main-build: connect_master.elf secondary-outputs
+main-build: SPI_master.elf secondary-outputs
 
 # Tool invocations
-connect_master.elf connect_master.map: $(OBJS) $(USER_OBJS) C:\Users\o\STM32CubeIDE\workspace_1.18.1\can_int\STM32F103C8TX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "connect_master.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m3 -T"C:\Users\o\STM32CubeIDE\workspace_1.18.1\can_int\STM32F103C8TX_FLASH.ld" --specs=nosys.specs -Wl,-Map="connect_master.map" -Wl,--gc-sections -static --specs=nano.specs -mfloat-abi=soft -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+SPI_master.elf SPI_master.map: $(OBJS) $(USER_OBJS) C:\Users\o\STM32CubeIDE\workspace_1.18.1\SPI_master\STM32F103C8TX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "SPI_master.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m3 -T"C:\Users\o\STM32CubeIDE\workspace_1.18.1\SPI_master\STM32F103C8TX_FLASH.ld" --specs=nosys.specs -Wl,-Map="SPI_master.map" -Wl,--gc-sections -static --specs=nano.specs -mfloat-abi=soft -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 
@@ -74,14 +74,14 @@ default.size.stdout: $(EXECUTABLES) makefile objects.list $(OPTIONAL_TOOL_DEPS)
 	@echo 'Finished building: $@'
 	@echo ' '
 
-connect_master.list: $(EXECUTABLES) makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-objdump -h -S $(EXECUTABLES) > "connect_master.list"
+SPI_master.list: $(EXECUTABLES) makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-objdump -h -S $(EXECUTABLES) > "SPI_master.list"
 	@echo 'Finished building: $@'
 	@echo ' '
 
 # Other Targets
 clean:
-	-$(RM) connect_master.elf connect_master.list connect_master.map default.size.stdout
+	-$(RM) SPI_master.elf SPI_master.list SPI_master.map default.size.stdout
 	-@echo ' '
 
 secondary-outputs: $(SIZE_OUTPUT) $(OBJDUMP_LIST)

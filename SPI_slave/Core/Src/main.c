@@ -22,13 +22,16 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#define BUFFER_SIZE 2
-#define DHT11_CODE 2
-#define HCSR04_CODE 3
+#define BUFFER_SIZE 3
+#define DHT11_CODE 0
+#define HCSR04_CODE 1
+#define RESPONSE_CODE 2
 #include "task.h"
 #include "queue.h"
+#include "semphr.h"
 uint8_t transmitBuffer[BUFFER_SIZE];
 uint8_t receiveBuffer[BUFFER_SIZE];
+
 
 /* USER CODE END Includes */
 
@@ -50,6 +53,9 @@ uint8_t receiveBuffer[BUFFER_SIZE];
 /* Private variables ---------------------------------------------------------*/
 SPI_HandleTypeDef hspi1;
 
+TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim3;
+
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
@@ -57,24 +63,24 @@ const osThreadAttr_t defaultTask_attributes = {
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityLow,
 };
-/* Definitions for SPI_Transmit */
-osThreadId_t SPI_TransmitHandle;
-const osThreadAttr_t SPI_Transmit_attributes = {
-  .name = "SPI_Transmit",
+/* Definitions for SPI_Transaction */
+osThreadId_t SPI_TransactionHandle;
+const osThreadAttr_t SPI_Transaction_attributes = {
+  .name = "SPI_Transaction",
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
-/* Definitions for SPI_Recieve */
-osThreadId_t SPI_RecieveHandle;
-const osThreadAttr_t SPI_Recieve_attributes = {
-  .name = "SPI_Recieve",
+/* Definitions for DHT11 */
+osThreadId_t DHT11Handle;
+const osThreadAttr_t DHT11_attributes = {
+  .name = "DHT11",
   .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityAboveNormal,
+  .priority = (osPriority_t) osPriorityBelowNormal,
 };
-/* Definitions for TaskDHT11 */
-osThreadId_t TaskDHT11Handle;
-const osThreadAttr_t TaskDHT11_attributes = {
-  .name = "TaskDHT11",
+/* Definitions for HCSR04 */
+osThreadId_t HCSR04Handle;
+const osThreadAttr_t HCSR04_attributes = {
+  .name = "HCSR04",
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityBelowNormal,
 };
@@ -83,10 +89,20 @@ osMessageQueueId_t QueueTransmitHandle;
 const osMessageQueueAttr_t QueueTransmit_attributes = {
   .name = "QueueTransmit"
 };
-/* Definitions for QueueDHT11 */
-osMessageQueueId_t QueueDHT11Handle;
-const osMessageQueueAttr_t QueueDHT11_attributes = {
-  .name = "QueueDHT11"
+/* Definitions for BinarySemDHT11 */
+osSemaphoreId_t BinarySemDHT11Handle;
+const osSemaphoreAttr_t BinarySemDHT11_attributes = {
+  .name = "BinarySemDHT11"
+};
+/* Definitions for BinarySemHCSR04 */
+osSemaphoreId_t BinarySemHCSR04Handle;
+const osSemaphoreAttr_t BinarySemHCSR04_attributes = {
+  .name = "BinarySemHCSR04"
+};
+/* Definitions for BinarySemRESP */
+osSemaphoreId_t BinarySemRESPHandle;
+const osSemaphoreAttr_t BinarySemRESP_attributes = {
+  .name = "BinarySemRESP"
 };
 /* USER CODE BEGIN PV */
 
@@ -96,10 +112,12 @@ const osMessageQueueAttr_t QueueDHT11_attributes = {
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_SPI1_Init(void);
+static void MX_TIM2_Init(void);
+static void MX_TIM3_Init(void);
 void StartDefaultTask(void *argument);
-void Start_SPI_Transmit(void *argument);
-void Start_SPI_Recieve(void *argument);
+void StartTaskSPI_Transaction(void *argument);
 void StartTaskDHT11(void *argument);
+void StartTaskHCSR04(void *argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -107,26 +125,87 @@ void StartTaskDHT11(void *argument);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+sr04_t sr04 = {
+    .trig_port = HCSR04_Trig_GPIO_Port,
+    .trig_pin = HCSR04_Trig_Pin,
+	.echo_port = HCSR04_Echo_GPIO_Port,
+	.echo_pin = HCSR04_Echo_Pin,
+    .echo_htim = & htim3,
+    .capture_flag = 0,
+    .time = 0,
+    .last_time = 20,
+    .counter = 0,
+};
+
 uint32_t task1Cnt = 0;
 	uint32_t task2Cnt = 0;
 
-	void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi)
+	void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
 	{
 	    if (hspi->Instance == SPI1)
 	    {
+	    	BaseType_t xHigherPriorityTaskWoken = pdTRUE;
 
-	        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-
-	        uint8_t toSend = receiveBuffer[0];
-
-	        xQueueSendFromISR(
-	        		QueueDHT11Handle,
-	            &toSend,
-	            &xHigherPriorityTaskWoken
-	        );
-
+	        switch (receiveBuffer[0]) {
+	        	case DHT11_CODE:
+	        		xSemaphoreGiveFromISR(BinarySemDHT11Handle, &xHigherPriorityTaskWoken);
+	        		break;
+	        	case HCSR04_CODE:
+	        		xSemaphoreGiveFromISR(BinarySemHCSR04Handle, &xHigherPriorityTaskWoken);
+	        		break;
+	        	case RESPONSE_CODE:
+	        		xSemaphoreGiveFromISR(BinarySemRESPHandle, &xHigherPriorityTaskWoken);
+	        		break;
+	        	default:
+	        		break;
+	        }
 	        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 	    }
+	}
+
+	void sr04_trigger(sr04_t * sr04) {
+	    if (!(sr04 -> capture_flag)) {
+	        HAL_GPIO_WritePin(sr04 -> trig_port, sr04 -> trig_pin, GPIO_PIN_SET);
+	        HAL_Delay(1);
+	        HAL_GPIO_WritePin(sr04 -> trig_port, sr04 -> trig_pin, GPIO_PIN_RESET);
+	    } else {
+	        (sr04 -> counter) ++;
+	        if ((sr04 -> counter) == 5) {
+	            sr04 -> counter = 0;
+	            sr04 -> capture_flag = 0;
+	            sr04 -> echo_htim -> State = HAL_TIM_STATE_READY;
+	        }
+	    }
+	}
+
+	void sr04_measure(sr04_t * sr04) {
+		uint32_t signal_time;
+	    if (sr04 -> echo_htim -> State == HAL_TIM_STATE_READY) //start timer if stopped
+	    {
+	        sr04 -> capture_flag = 1;
+	        __HAL_TIM_SET_COUNTER(sr04 -> echo_htim, 0x0000); // обнуление счётчика
+	        HAL_TIM_Base_Start_IT(sr04 -> echo_htim);
+
+	    } else if (sr04 -> echo_htim -> State == HAL_TIM_STATE_BUSY) //stop timer if started
+	    {
+	        HAL_TIM_Base_Stop_IT(sr04 -> echo_htim);
+	        signal_time = __HAL_TIM_GET_COUNTER(sr04 -> echo_htim);
+	        sr04 -> time = signal_time / 58;
+
+	        sr04 -> last_time = sr04 -> time;
+	        sr04 -> capture_flag = 0;
+	    }
+	}
+	void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+	    if (GPIO_Pin == sr04.echo_pin) {
+	        sr04_measure( & sr04);
+	    }
+	}
+
+	void DelayUS(uint32_t us) {
+	 uint32_t start = TIM2->CNT;
+	 while (TIM2->CNT - start < us);
 	}
 
 	void DHT11_Start (void)
@@ -139,19 +218,20 @@ uint32_t task1Cnt = 0;
 		  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 		  HAL_GPIO_Init(DHT11_GPIO_Port, &GPIO_InitStruct);
 
-		HAL_GPIO_WritePin (DHT11_GPIO_Port, DHT11_Pin, 0);   // pull the pin low
-		HAL_Delay (18000);   // wait for 18ms
+		HAL_GPIO_WritePin (DHT11_GPIO_Port, DHT11_Pin, 0);
+		HAL_Delay (18);   // wait for 18ms
 
 		GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+		HAL_GPIO_Init(DHT11_GPIO_Port, &GPIO_InitStruct);
 	}
 
 	uint8_t DHT11_Check_Response (void)
 	{
 		uint8_t Response = 0;
-		HAL_Delay (40);
+		DelayUS(40);
 		if (!(HAL_GPIO_ReadPin (DHT11_GPIO_Port, DHT11_Pin)))
 		{
-			HAL_Delay (80);
+			DelayUS(80);
 			if ((HAL_GPIO_ReadPin (DHT11_GPIO_Port, DHT11_Pin))) Response = 1;
 			else Response = -1;
 		}
@@ -163,10 +243,11 @@ uint32_t task1Cnt = 0;
 	uint8_t DHT11_Read (void)
 	{
 		uint8_t i,j;
+		i=0;
 		for (j=0;j<8;j++)
 		{
 			while (!(HAL_GPIO_ReadPin (DHT11_GPIO_Port, DHT11_Pin)));   // wait for the pin to go high
-			HAL_Delay (40);   // wait for 40 us
+			DelayUS (40);   // wait for 40 us
 			if (!(HAL_GPIO_ReadPin (DHT11_GPIO_Port, DHT11_Pin)))   // if the pin is low
 			{
 				i&= ~(1<<(7-j));   // write 0
@@ -208,9 +289,12 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_SPI1_Init();
+  MX_TIM2_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
 
-
+  HAL_TIM_Base_Start(&htim2);
+  HAL_TIM_IC_Start_IT( & htim3, TIM_CHANNEL_1);
 
   /* USER CODE END 2 */
 
@@ -220,6 +304,16 @@ int main(void)
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
   /* USER CODE END RTOS_MUTEX */
+
+  /* Create the semaphores(s) */
+  /* creation of BinarySemDHT11 */
+  BinarySemDHT11Handle = osSemaphoreNew(1, 0, &BinarySemDHT11_attributes);
+
+  /* creation of BinarySemHCSR04 */
+  BinarySemHCSR04Handle = osSemaphoreNew(1, 0, &BinarySemHCSR04_attributes);
+
+  /* creation of BinarySemRESP */
+  BinarySemRESPHandle = osSemaphoreNew(1, 0, &BinarySemRESP_attributes);
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
@@ -231,10 +325,7 @@ int main(void)
 
   /* Create the queue(s) */
   /* creation of QueueTransmit */
-  QueueTransmitHandle = osMessageQueueNew (16, sizeof(uint16_t), &QueueTransmit_attributes);
-
-  /* creation of QueueDHT11 */
-  QueueDHT11Handle = osMessageQueueNew (16, sizeof(uint16_t), &QueueDHT11_attributes);
+  QueueTransmitHandle = osMessageQueueNew (16, sizeof(uint32_t), &QueueTransmit_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -244,14 +335,14 @@ int main(void)
   /* creation of defaultTask */
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
-  /* creation of SPI_Transmit */
-  SPI_TransmitHandle = osThreadNew(Start_SPI_Transmit, NULL, &SPI_Transmit_attributes);
+  /* creation of SPI_Transaction */
+  SPI_TransactionHandle = osThreadNew(StartTaskSPI_Transaction, NULL, &SPI_Transaction_attributes);
 
-  /* creation of SPI_Recieve */
-  SPI_RecieveHandle = osThreadNew(Start_SPI_Recieve, NULL, &SPI_Recieve_attributes);
+  /* creation of DHT11 */
+  DHT11Handle = osThreadNew(StartTaskDHT11, NULL, &DHT11_attributes);
 
-  /* creation of TaskDHT11 */
-  TaskDHT11Handle = osThreadNew(StartTaskDHT11, NULL, &TaskDHT11_attributes);
+  /* creation of HCSR04 */
+  HCSR04Handle = osThreadNew(StartTaskHCSR04, NULL, &HCSR04_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -289,10 +380,13 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL4;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -302,12 +396,12 @@ void SystemClock_Config(void)
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK)
   {
     Error_Handler();
   }
@@ -332,7 +426,7 @@ static void MX_SPI1_Init(void)
   hspi1.Instance = SPI1;
   hspi1.Init.Mode = SPI_MODE_SLAVE;
   hspi1.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi1.Init.DataSize = SPI_DATASIZE_16BIT;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
   hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi1.Init.NSS = SPI_NSS_HARD_INPUT;
@@ -347,6 +441,96 @@ static void MX_SPI1_Init(void)
   /* USER CODE BEGIN SPI1_Init 2 */
 
   /* USER CODE END SPI1_Init 2 */
+
+}
+
+/**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 31;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 65535;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+
+}
+
+/**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 31;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 65535;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
 
 }
 
@@ -369,17 +553,33 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(Led2_GPIO_Port, Led2_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(Led_GPIO_Port, Led_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(HCSR04_Trig_GPIO_Port, HCSR04_Trig_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(DHT11_GPIO_Port, DHT11_Pin, GPIO_PIN_SET);
 
-  /*Configure GPIO pin : Led2_Pin */
-  GPIO_InitStruct.Pin = Led2_Pin;
+  /*Configure GPIO pin : Led_Pin */
+  GPIO_InitStruct.Pin = Led_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(Led2_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(Led_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : HCSR04_Echo_Pin */
+  GPIO_InitStruct.Pin = HCSR04_Echo_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  HAL_GPIO_Init(HCSR04_Echo_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : HCSR04_Trig_Pin */
+  GPIO_InitStruct.Pin = HCSR04_Trig_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(HCSR04_Trig_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : DHT11_Pin */
   GPIO_InitStruct.Pin = DHT11_Pin;
@@ -387,6 +587,10 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(DHT11_GPIO_Port, &GPIO_InitStruct);
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
@@ -415,51 +619,31 @@ void StartDefaultTask(void *argument)
   /* USER CODE END 5 */
 }
 
-/* USER CODE BEGIN Header_Start_SPI_Transmit */
+/* USER CODE BEGIN Header_StartTaskSPI_Transaction */
 /**
-* @brief Function implementing the SPI_Transmit thread.
+* @brief Function implementing the SPI_Transaction thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_Start_SPI_Transmit */
-void Start_SPI_Transmit(void *argument)
+/* USER CODE END Header_StartTaskSPI_Transaction */
+void StartTaskSPI_Transaction(void *argument)
 {
-  /* USER CODE BEGIN Start_SPI_Transmit */
-	uint16_t Recieved;
+  /* USER CODE BEGIN StartTaskSPI_Transaction */
+	uint32_t Received;
+	HAL_SPI_TransmitReceive_IT(&hspi1, transmitBuffer, receiveBuffer, BUFFER_SIZE);
   /* Infinite loop */
   for(;;)
   {
 
-	  if(uxQueueMessagesWaiting(QueueTransmitHandle)>1)
-	  	  {
-	  		  xQueueReceive( QueueTransmitHandle, &( Recieved ), portMAX_DELAY );
-	  		transmitBuffer[0] = Recieved;
-	  		transmitBuffer[1] = Recieved>>8;
-	  		  HAL_SPI_Transmit_IT(&hspi1, transmitBuffer, BUFFER_SIZE);
-
-	  	  }
-    osDelay(30);
+	  	xQueueReceive( QueueTransmitHandle, &( Received ), portMAX_DELAY );
+	  	transmitBuffer[0] = Received;
+	  	transmitBuffer[1] = Received<<8;
+	  	transmitBuffer[2] = Received<<16;
+	  	HAL_SPI_TransmitReceive_IT(&hspi1, transmitBuffer, receiveBuffer, BUFFER_SIZE);
+	  	xSemaphoreTake(BinarySemRESPHandle, portMAX_DELAY);
+	  	HAL_SPI_TransmitReceive_IT(&hspi1, transmitBuffer, receiveBuffer, BUFFER_SIZE);
   }
-  /* USER CODE END Start_SPI_Transmit */
-}
-
-/* USER CODE BEGIN Header_Start_SPI_Recieve */
-/**
-* @brief Function implementing the SPI_Recieve thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_Start_SPI_Recieve */
-void Start_SPI_Recieve(void *argument)
-{
-  /* USER CODE BEGIN Start_SPI_Recieve */
-  /* Infinite loop */
-  for(;;)
-  {
-	  HAL_SPI_Receive_IT(&hspi1, receiveBuffer, BUFFER_SIZE);
-    osDelay(10);
-  }
-  /* USER CODE END Start_SPI_Recieve */
+  /* USER CODE END StartTaskSPI_Transaction */
 }
 
 /* USER CODE BEGIN Header_StartTaskDHT11 */
@@ -472,32 +656,49 @@ void Start_SPI_Recieve(void *argument)
 void StartTaskDHT11(void *argument)
 {
   /* USER CODE BEGIN StartTaskDHT11 */
-	uint16_t Recieved;
 	uint8_t Presence,Rh_byte1,Rh_byte2,Temp_byte1,Temp_byte2,SUM;
-	DHT11_Start();
   /* Infinite loop */
   for(;;)
   {
-	  if(uxQueueMessagesWaiting(QueueDHT11Handle)>1)
-	  	  	  {
+	 xSemaphoreTake(BinarySemDHT11Handle, portMAX_DELAY);
+	 HAL_GPIO_WritePin(Led_GPIO_Port, Led_Pin, GPIO_PIN_RESET);
 
-	  	  		  xQueueReceive( QueueDHT11Handle, &( Recieved ), portMAX_DELAY );
+	 DHT11_Start();
+	 Presence = DHT11_Check_Response();
+	 Rh_byte1 = DHT11_Read ();
+	 Rh_byte2 = DHT11_Read ();
+	 Temp_byte1 = DHT11_Read ();
+	 Temp_byte2 = DHT11_Read ();
+	 SUM = DHT11_Read();
 
-	  	  		      Presence = DHT11_Check_Response();
-	  	  		      Rh_byte1 = DHT11_Read ();
-	  	  		      Rh_byte2 = DHT11_Read ();
-	  	  		      Temp_byte1 = DHT11_Read ();
-	  	  		      Temp_byte2 = DHT11_Read ();
-	  	  		      SUM = DHT11_Read();
-	  	  		      uint16_t toSend = (Temp_byte1<<8)|Rh_byte1;
-	  	  		      xQueueSend( QueueTransmitHandle, ( void * ) &toSend, portMAX_DELAY  );
-	  	  		  HAL_GPIO_WritePin(Led2_GPIO_Port, Led2_Pin, GPIO_PIN_RESET);
-	  	  		  	        osDelay(50);
-	  	  		  	        HAL_GPIO_WritePin(Led2_GPIO_Port, Led2_Pin, GPIO_PIN_SET);
-	  	  	  }
-    osDelay(30);
+	 uint32_t toSend = (DHT11_CODE<<16)|(Rh_byte1<<8)|Temp_byte1;
+	 HAL_GPIO_WritePin(Led_GPIO_Port, Led_Pin, GPIO_PIN_SET);
+	 xQueueSend( QueueTransmitHandle, ( void * ) &toSend, portMAX_DELAY  );
   }
   /* USER CODE END StartTaskDHT11 */
+}
+
+/* USER CODE BEGIN Header_StartTaskHCSR04 */
+/**
+* @brief Function implementing the HCSR04 thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartTaskHCSR04 */
+void StartTaskHCSR04(void *argument)
+{
+  /* USER CODE BEGIN StartTaskHCSR04 */
+  /* Infinite loop */
+  for(;;)
+  {
+	  xSemaphoreTake(BinarySemHCSR04Handle, portMAX_DELAY);
+	  sr04_trigger( & sr04);
+	  osDelay(10);
+
+	  uint32_t toSend = (HCSR04_CODE<<16)|sr04.time/58;
+	  xQueueSend( QueueTransmitHandle, ( void * ) &toSend, portMAX_DELAY  );
+  }
+  /* USER CODE END StartTaskHCSR04 */
 }
 
 /**

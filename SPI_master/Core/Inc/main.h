@@ -59,12 +59,14 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define Led_Pin GPIO_PIN_13
 #define Led_GPIO_Port GPIOC
-#define Temp_button_Pin GPIO_PIN_3
-#define Temp_button_GPIO_Port GPIOB
-#define Temp_button_EXTI_IRQn EXTI3_IRQn
-#define Humidity_button_Pin GPIO_PIN_4
-#define Humidity_button_GPIO_Port GPIOB
-#define Humidity_button_EXTI_IRQn EXTI4_IRQn
+#define SPI_CS_Pin GPIO_PIN_4
+#define SPI_CS_GPIO_Port GPIOA
+#define DHT11_button_Pin GPIO_PIN_3
+#define DHT11_button_GPIO_Port GPIOB
+#define DHT11_button_EXTI_IRQn EXTI3_IRQn
+#define HCSR04_button_Pin GPIO_PIN_4
+#define HCSR04_button_GPIO_Port GPIOB
+#define HCSR04_button_EXTI_IRQn EXTI4_IRQn
 
 /* USER CODE BEGIN Private defines */
 #ifndef LCD_H

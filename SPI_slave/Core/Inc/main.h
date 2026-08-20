@@ -57,6 +57,13 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define Led_Pin GPIO_PIN_13
+#define Led_GPIO_Port GPIOC
+#define HCSR04_Echo_Pin GPIO_PIN_11
+#define HCSR04_Echo_GPIO_Port GPIOA
+#define HCSR04_Echo_EXTI_IRQn EXTI15_10_IRQn
+#define HCSR04_Trig_Pin GPIO_PIN_5
+#define HCSR04_Trig_GPIO_Port GPIOB
 #define DHT11_Pin GPIO_PIN_9
 #define DHT11_GPIO_Port GPIOB
 
@@ -64,11 +71,11 @@ void Error_Handler(void);
 typedef struct {
     GPIO_TypeDef *trig_port;  // Trigger pin port
     uint16_t trig_pin;  // Trigger pin number
+    GPIO_TypeDef *echo_port;  // Echo pin port
+    uint16_t echo_pin;  // Echo pin number
     TIM_HandleTypeDef *echo_htim;  // Echo pin timer
     uint8_t capture_flag;  // Echo pin capture flag
     uint32_t time;  // Distance in mm
-    uint32_t time_begin;
-    uint32_t time_end;
     uint32_t last_time;
     uint16_t counter;
 } sr04_t;
